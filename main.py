@@ -1,4 +1,3 @@
-import sys
 import streamlit as st
 import streamlit_webrtc as stweb
 import tensorflow as tf
@@ -7,13 +6,19 @@ import utils as ut
 DEFAULT_CONFIDENCE_THRESHOLD = 0.5
 
 
-def main():
+def main() -> None:
+    """
+    Object detection using deep learning with convolutional neural network model.
+    """
     st.title("Object Detection")
     st.caption(
-        "Object Detection using Deep Learning with Convolutional Neural Network Model")
+        "Object Detection using Deep Learning with Convolutional Neural Network Model"
+    )
     # load the trained model
     model = tf.keras.models.load_model(
-        'object_detection_model.h5', compile=False)
+        "model/object_detector.h5",
+        compile=False
+    )
     with st.sidebar:
         options = {
             0: "Webcam",
@@ -44,7 +49,9 @@ def main():
 
     elif selected == 1:
         uploaded_video = st.file_uploader(
-            "Upload Video", type=['mp4', 'mpeg', 'mov'])
+            "Upload Video",
+            type=['mp4', 'mpeg', 'mov']
+        )
 
         if uploaded_video != None:
             vid = uploaded_video.name

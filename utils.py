@@ -4,6 +4,7 @@ import numpy as np
 import tensorflow as tf
 
 
+# a list of 20 object classes from the PASCAL VOC dataset
 VOC_CLASSES = [
     'aeroplane',
     'bicycle',
@@ -28,56 +29,25 @@ VOC_CLASSES = [
 ]
 
 
-class ObjectDetector(tf.keras.Model):
-
-    def __init__(self, model, **kwargs) -> None:
-        super().__init__(**kwargs)
-        self.model = model
-
-    def compile(self, optimizer, clf_loss, reg_loss, **kwargs):
-        super().compile(**kwargs)
-        self.clf_loss = clf_loss
-        self.reg_loss = reg_loss
-        self.optimizer = optimizer
-
-    def train_step(self, batch, **kwargs):
-        x, y = batch
-        with tf.GradientTape() as tape:
-            y_hat = self.model(x, training=True)
-            batch_clf_loss, batch_reg_loss = self.get_losses(y, y_hat)
-            total_loss = 0.5*batch_clf_loss + batch_reg_loss
-            grad = tape.gradient(total_loss, self.model.trainable_variables)
-        self.optimizer.apply_gradients(
-            zip(grad, self.model.trainable_variables)
-        )
-        return {
-            'total_loss': total_loss,
-            'batch_clf_loss': batch_clf_loss,
-            'batch_reg_loss': batch_reg_loss
-        }
-
-    def test_step(self, batch, **kwargs):
-        x, y = batch
-        y_hat = self.model(x, training=False)
-        batch_clf_loss, batch_reg_loss = self.get_losses(y, y_hat)
-        total_loss = 0.5*batch_clf_loss + batch_reg_loss
-        return {
-            'total_loss': total_loss,
-            'batch_clf_loss': batch_clf_loss,
-            'batch_reg_loss': batch_reg_loss
-        }
-
-    def get_losses(self, y, y_hat):
-        return self.clf_loss(y[0], y_hat[0]), self.reg_loss(y[1], y_hat[1])
-
-    def call(self, x, **kwargs):
-        return self.model(x, **kwargs)
-
-
 def partition(
     dataset: tf.data.Dataset, train: float = 0.8, test: float = 0.1, val: float = 0.1,
     shuffle: bool = True, shuffle_size: int = 1000, seed: int = 101
 ) -> tuple:
+    """
+    Partitions the given dataset into train, test, and validation sets.
+
+    Args:
+        dataset (tf.data.Dataset): The dataset to partition.
+        train (float): The proportion of the dataset to use for training. Default is 0.8.
+        test (float): The proportion of the dataset to use for testing. Default is 0.1.
+        val (float): The proportion of the dataset to use for validation. Default is 0.1.
+        shuffle (bool): Whether to shuffle the dataset before partitioning. Default is True.
+        shuffle_size (int): The buffer size to use for shuffling. Default is 1000.
+        seed (int): The random seed to use for shuffling. Default is 101.
+
+    Returns:
+        tuple: A tuple of three datasets, representing the train, test, and validation sets.
+    """
     assert(train + test + val == 1)
 
     if shuffle:
@@ -95,6 +65,16 @@ def partition(
 
 
 def preprocess_data(data: dict, image_size: int) -> tuple:
+    """
+    Preprocesses the given data.
+
+    Args:
+        data (dict): A dictionary containing the data to preprocess.
+        image_size (int): The size of the image to resize to.
+
+    Returns:
+        tuple: A tuple of an image tensor and a tuple of a one-hot encoded label tensor and a bounding box tensor.
+    """
     image = data['image']
     bbox = data['objects']['bbox'][0]
     label = data['objects']['label'][0]
@@ -108,6 +88,17 @@ def preprocess_data(data: dict, image_size: int) -> tuple:
 
 
 def pipeline(data: tf.data.Dataset, batch_size: int = 32, image_size: int = 256) -> tf.data.Dataset:
+    """
+    Builds a data pipeline for the given dataset.
+
+    Args:
+        data (tf.data.Dataset): The dataset to build the pipeline for.
+        batch_size (int): The batch size to use. Default is 32.
+        image_size (int): The size of the image to resize to. Default is 256.
+
+    Returns:
+        tf.data.Dataset: The transformed dataset.
+    """
     AUTOTUNE = tf.data.experimental.AUTOTUNE
     data = data.map(lambda entry: preprocess_data(
         entry, image_size), num_parallel_calls=AUTOTUNE)
@@ -117,26 +108,17 @@ def pipeline(data: tf.data.Dataset, batch_size: int = 32, image_size: int = 256)
     return data
 
 
-def build_model(unfreezing: int = 5, image_size: int = 256):
-    input_layer = tf.keras.layers.Input(shape=(image_size, image_size, 3))
-    # base model
-    vgg = tf.keras.applications.VGG16(include_top=False)
-    # freeze the convolutional base
-    for layer in vgg.layers[:-unfreezing]:
-        layer.trainable = False
-    vgg = vgg(input_layer)
-    # classification: object category model
-    f = tf.keras.layers.GlobalMaxPooling2D()(vgg)
-    clf_in = tf.keras.layers.Dense(2048, activation='relu')(f)
-    clf_out = tf.keras.layers.Dense(20, activation='softmax')(clf_in)
-    # regression: bounding box model
-    g = tf.keras.layers.GlobalMaxPooling2D()(vgg)
-    reg_in = tf.keras.layers.Dense(2048, activation='relu')(g)
-    reg_out = tf.keras.layers.Dense(4, activation='sigmoid')(reg_in)
-    return tf.keras.Model(inputs=input_layer, outputs=(clf_out, reg_out))
+def localization_loss(y: tf.Tensor, y_hat: tf.Tensor) -> float:
+    """
+    Computes the localization loss between the true bounding box and the predicted bounding box.
 
+    Args:
+        y (tf.Tensor): The true bounding box tensor.
+        y_hat (tf.Tensor): The predicted bounding box tensor.
 
-def localization_loss(y, y_hat):
+    Returns:
+        float: The localization loss tensor.
+    """
     delta_coord = tf.reduce_sum(tf.square(y[:, :2] - y_hat[:, :2]))
     delta_size = tf.reduce_sum(
         tf.square((y[:, 3] - y[:, 1]) - (y_hat[:, 3] - y_hat[:, 1])) +
@@ -145,7 +127,19 @@ def localization_loss(y, y_hat):
     return delta_coord + delta_size
 
 
-def frame_callback(frame, model: tf.keras.Model, image_size: int, threshold: float):
+def frame_callback(frame: any, model: tf.keras.Model, image_size: int, threshold: float) -> av.VideoFrame:
+    """
+    A callback function to process each frame of a video.
+
+    Args:
+        frame (any): The current video frame.
+        model (tf.keras.Model): The object detection model to use.
+        image_size (int): The size of the image to resize to.
+        threshold (float): The confidence threshold to use for object detection.
+
+    Returns:
+        av.VideoFrame: The processed video frame.
+    """
     if isinstance(frame, av.VideoFrame):
         frame = frame.to_ndarray(format="bgr24")
 
@@ -201,7 +195,17 @@ def frame_callback(frame, model: tf.keras.Model, image_size: int, threshold: flo
     return av.VideoFrame.from_ndarray(frame, format="bgr24")
 
 
-def detect(source: any, model: tf.keras.Model, image_size: int = 256, threshold: float = 0.5, with_output: bool = False):
+def detect(source: any, model: tf.keras.Model, image_size: int = 256, threshold: float = 0.5, with_output: bool = False) -> None:
+    """
+    Detects objects in the specified video source using the given object detection model.
+
+    Args:
+        source (any): The video source to use.
+        model (tf.keras.Model): The object detection model to use.
+        image_size (int): The size of the image to resize to. Default is 256.
+        threshold (float): The confidence threshold to use for object detection. Default is 0.5.
+        with_output (bool): Whether to save the output video to a file. Default is False.
+    """
     captured = cv.VideoCapture(source)
 
     if with_output:
@@ -229,4 +233,3 @@ def detect(source: any, model: tf.keras.Model, image_size: int = 256, threshold:
 
     captured.release()
     cv.destroyAllWindows()
-    
